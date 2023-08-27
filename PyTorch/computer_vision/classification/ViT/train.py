@@ -153,28 +153,29 @@ def valid(args, model, writer, test_loader, global_step):
                           dynamic_ncols=True,
                           disable=args.local_rank not in [-1, 0])
     loss_fct = torch.nn.CrossEntropyLoss()
-    for step, batch in enumerate(epoch_iterator):
-        batch = tuple(t.to(args.device) for t in batch)
-        x, y = batch
-        with torch.no_grad():
-            logits = model(x)[0]
+    with torch.no_grad(), torch.autocast(device_type="hpu", dtype=torch.bfloat16, enabled=args.is_autocast):
+        for step, batch in enumerate(epoch_iterator):
+            batch = tuple(t.to(args.device) for t in batch)
+            x, y = batch
+            with torch.no_grad():
+                logits = model(x)[0]
 
-            eval_loss = loss_fct(logits, y)
-            eval_losses.update(eval_loss.item())
+                eval_loss = loss_fct(logits, y)
+                eval_losses.update(eval_loss.item())
 
-            preds = torch.argmax(logits, dim=-1)
+                preds = torch.argmax(logits, dim=-1)
 
-        if len(all_preds) == 0:
-            all_preds.append(preds.detach().cpu().numpy())
-            all_label.append(y.detach().cpu().numpy())
-        else:
-            all_preds[0] = np.append(
-                all_preds[0], preds.detach().cpu().numpy(), axis=0
-            )
-            all_label[0] = np.append(
-                all_label[0], y.detach().cpu().numpy(), axis=0
-            )
-        epoch_iterator.set_description("Validating... (loss=%2.5f)" % eval_losses.val)
+            if len(all_preds) == 0:
+                all_preds.append(preds.detach().cpu().numpy())
+                all_label.append(y.detach().cpu().numpy())
+            else:
+                all_preds[0] = np.append(
+                    all_preds[0], preds.detach().cpu().numpy(), axis=0
+                    )
+                all_label[0] = np.append(
+                    all_label[0], y.detach().cpu().numpy(), axis=0
+                    )
+            epoch_iterator.set_description("Validating... (loss=%2.5f)" % eval_losses.val)
 
     all_preds, all_label = all_preds[0], all_label[0]
     accuracy = simple_accuracy(all_preds, all_label)
@@ -254,12 +255,13 @@ def train(args, model):
                               dynamic_ncols=True,
                               disable=args.local_rank not in [-1, 0])
         for step, batch in enumerate(epoch_iterator):
-            batch = tuple(t.to(args.device) for t in batch)
-            x, y = batch
-            loss = model(x, y)
+            with torch.autocast(device_type="hpu", dtype=torch.bfloat16, enabled=args.is_autocast):
+                batch = tuple(t.to(args.device) for t in batch)
+                x, y = batch
+                loss = model(x, y)
 
-            if args.gradient_accumulation_steps > 1:
-                loss = loss / args.gradient_accumulation_steps
+                if args.gradient_accumulation_steps > 1:
+                    loss = loss / args.gradient_accumulation_steps
 
             # WA -MarkStep added for SFG support- will be removed later on
             if (str(args.device) == 'hpu') and args.run_lazy_mode:
@@ -375,6 +377,7 @@ def main():
     parser.add_argument('--run_lazy_mode', default='True', type=lambda x: x.lower() == 'true',
                         help='run model in lazy execution mode(enabled by default).'
                         'Any value other than True(case insensitive) disables lazy mode')
+    parser.add_argument('--autocast', dest='is_autocast', action='store_true', help='enable autocast mode on Gaudi')
     args = parser.parse_args()
 
     if args.use_hpu == 0:
